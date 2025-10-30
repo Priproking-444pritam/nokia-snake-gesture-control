@@ -187,7 +187,7 @@ This project is open source and available under the MIT License.
 
 ## Author
 
-**Created by Tuba Khan** 👨‍💻
+**Created by Tuba Khan** :)
 
 - GitHub: [@tubakhxn](https://github.com/tubakhxn)
 - A passionate developer creating innovative gaming experiences with AI and computer vision
@@ -201,5 +201,6 @@ This project is open source and available under the MIT License.
 - **Developed by Tuba Khan** - bringing classic games into the modern age with gesture control
 
 ---
+
 
 **Enjoy playing Nokia Snake with hand gestures! 🐍👋**
