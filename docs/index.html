@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Viper — Gesture Snake</title>
+  <meta name="description" content="Play Viper in the browser. Point to steer, pinch to boost, peace sign to drop hand-walls. Eight levels and five snake types." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="grain"></div>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Gesture snake</p>
+      <h1 id="header-title">Viper</h1>
+      <p class="sub" id="header-sub">Point to steer · pinch to boost · peace sign drops a wall</p>
+    </div>
+    <div class="best-chip">best <strong id="best-score">0</strong></div>
+  </header>
+
+  <main id="app"></main>
+
+  <video id="cam" playsinline autoplay muted></video>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
