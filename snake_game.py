@@ -1,13 +1,40 @@
-"""
-Nokia Snake Game Implementation
-Classic snake game with Nokia-style graphics and mechanics
-"""
+"""Nokia-inspired snake engine with levels, types, maze walls, and hand-walls."""
+
+from __future__ import annotations
+
+import math
+import random
+from enum import Enum
+from typing import List, Optional, Set, Tuple
 
 import pygame
-import random
-import math
-from typing import List, Tuple, Optional
-from enum import Enum
+
+from config import (
+    APPLE,
+    APPLE_LEAF,
+    CELL_SIZE,
+    DANGER,
+    GOLD,
+    GRID_COLS,
+    GRID_LINE,
+    GRID_ROWS,
+    HAND_WALL,
+    HAND_WALL_GLOW,
+    MAX_HAND_WALLS,
+    MUTED,
+    PANEL,
+    PLAY_HEIGHT,
+    PLAY_WIDTH,
+    PLAY_X,
+    PLAY_Y,
+    RED,
+    WALL,
+    WALL_EDGE,
+    WHITE,
+)
+from levels import Level, empty_cells, get_level
+from snake_types import SnakeType
+
 
 class Direction(Enum):
     UP = (0, -1)
@@ -15,290 +42,271 @@ class Direction(Enum):
     LEFT = (-1, 0)
     RIGHT = (1, 0)
 
+
+OPPOSITE = {
+    Direction.UP: Direction.DOWN,
+    Direction.DOWN: Direction.UP,
+    Direction.LEFT: Direction.RIGHT,
+    Direction.RIGHT: Direction.LEFT,
+}
+
+DIR_FROM_NAME = {
+    "UP": Direction.UP,
+    "DOWN": Direction.DOWN,
+    "LEFT": Direction.LEFT,
+    "RIGHT": Direction.RIGHT,
+}
+
+
 class SnakeGame:
-    def __init__(self, width: int = 600, height: int = 600):
-        """Initialize the Nokia Snake game"""
-        # Game settings
-        self.width = width
-        self.height = height
-        self.grid_size = 20
-        self.grid_width = width // self.grid_size
-        self.grid_height = height // self.grid_size
-        
-        # Colors (Nokia green theme)
-        self.BLACK = (0, 0, 0)
-        self.WHITE = (255, 255, 255)
-        self.NOKIA_GREEN = (155, 188, 15)
-        self.DARK_GREEN = (139, 172, 15)
-        self.LIGHT_GREEN = (204, 255, 51)
-        self.RED = (255, 0, 0)
-        self.ORANGE = (255, 165, 0)
-        
-        # Initialize pygame
-        pygame.init()
-        self.screen = pygame.display.set_mode((width, height))
-        pygame.display.set_caption("Nokia Snake - Gesture Control")
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 36)
-        self.small_font = pygame.font.Font(None, 24)
-        
-        # Game state
-        self.reset_game()
-        
-        # Particle effects
-        self.particles = []
-        
-    def reset_game(self):
-        """Reset game to initial state"""
-        # Snake initialization
-        start_x = self.grid_width // 2
-        start_y = self.grid_height // 2
-        self.snake = [(start_x, start_y), (start_x - 1, start_y), (start_x - 2, start_y)]
+    def __init__(self, snake_type: SnakeType, level_number: int = 1):
+        self.snake_type = snake_type
+        self.level: Level = get_level(level_number)
+        self.maze_walls: Set[Tuple[int, int]] = set(self.level.walls)
+        self.hand_walls: Set[Tuple[int, int]] = set()
+        self.ghost_cell: Optional[Tuple[int, int]] = None
+        self.snake: List[Tuple[int, int]] = []
         self.direction = Direction.RIGHT
         self.next_direction = Direction.RIGHT
-        
-        # Game state
+        self.fruit: Tuple[int, int] = (0, 0)
         self.score = 0
+        self.fruits_eaten = 0
         self.game_over = False
+        self.won_level = False
         self.speed_boost = False
-        self.base_speed = 8
-        self.boost_speed = 15
-        
-        # Spawn first fruit
+        self.particles: List[dict] = []
+        self.break_cooldown = 0
+        self.reset_round()
+
+    def reset_round(self):
+        cx, cy = GRID_COLS // 2, GRID_ROWS // 2
+        length = max(2, self.snake_type.start_length)
+        self.snake = [(cx - i, cy) for i in range(length)]
+        self.direction = Direction.RIGHT
+        self.next_direction = Direction.RIGHT
+        self.game_over = False
+        self.won_level = False
+        self.speed_boost = False
+        self.particles = []
+        self.break_cooldown = 0
+        self.hand_walls.clear()
+        self.ghost_cell = None
         self.spawn_fruit()
-        
-    def spawn_fruit(self):
-        """Spawn a new fruit at random location"""
-        while True:
-            x = random.randint(0, self.grid_width - 1)
-            y = random.randint(0, self.grid_height - 1)
-            if (x, y) not in self.snake:
-                self.fruit = (x, y)
-                break
-    
-    def add_particle_effect(self, x: int, y: int):
-        """Add particle effect when eating fruit"""
-        for _ in range(8):
-            particle = {
-                'x': x * self.grid_size + self.grid_size // 2,
-                'y': y * self.grid_size + self.grid_size // 2,
-                'vx': random.uniform(-3, 3),
-                'vy': random.uniform(-3, 3),
-                'life': 30,
-                'max_life': 30
-            }
-            self.particles.append(particle)
-    
-    def update_particles(self):
-        """Update particle effects"""
-        for particle in self.particles[:]:
-            particle['x'] += particle['vx']
-            particle['y'] += particle['vy']
-            particle['life'] -= 1
-            
-            if particle['life'] <= 0:
-                self.particles.remove(particle)
-    
-    def change_direction(self, new_direction: str):
-        """Change snake direction based on gesture input"""
-        if self.game_over:
+
+    def occupied(self) -> Set[Tuple[int, int]]:
+        return set(self.snake) | self.maze_walls | self.hand_walls
+
+    def spawn_fruit(self) -> bool:
+        cells = empty_cells(self.maze_walls | self.hand_walls, set(self.snake))
+        if not cells:
+            return False
+        self.fruit = random.choice(cells)
+        return True
+
+    def change_direction(self, name: Optional[str]):
+        if self.game_over or self.won_level or not name:
             return
-            
-        direction_map = {
-            "UP": Direction.UP,
-            "DOWN": Direction.DOWN,
-            "LEFT": Direction.LEFT,
-            "RIGHT": Direction.RIGHT
-        }
-        
-        if new_direction in direction_map:
-            new_dir = direction_map[new_direction]
-            # Prevent immediate reversal
-            opposite = {
-                Direction.UP: Direction.DOWN,
-                Direction.DOWN: Direction.UP,
-                Direction.LEFT: Direction.RIGHT,
-                Direction.RIGHT: Direction.LEFT
-            }
-            
-            if new_dir != opposite.get(self.direction):
-                self.next_direction = new_dir
-    
+        new_dir = DIR_FROM_NAME.get(name)
+        if new_dir and new_dir != OPPOSITE.get(self.direction):
+            self.next_direction = new_dir
+
     def set_speed_boost(self, boost: bool):
-        """Set speed boost state"""
-        self.speed_boost = boost
-    
+        self.speed_boost = bool(boost)
+
+    def set_ghost_cell(self, cell: Optional[Tuple[int, int]]):
+        self.ghost_cell = cell
+
+    def try_drop_hand_wall(self, cell: Optional[Tuple[int, int]]) -> bool:
+        if self.game_over or self.won_level or cell is None:
+            return False
+        x, y = cell
+        if x < 0 or y < 0 or x >= GRID_COLS or y >= GRID_ROWS:
+            return False
+        if len(self.hand_walls) >= MAX_HAND_WALLS:
+            return False
+        if cell in self.occupied() or cell == self.fruit:
+            return False
+        self.hand_walls.add(cell)
+        return True
+
+    def current_speed(self) -> float:
+        base = self.snake_type.base_speed + self.level.speed_bonus
+        boost = self.snake_type.boost_speed + self.level.speed_bonus
+        return boost if self.speed_boost else base
+
+    def _wrap(self, x: int, y: int) -> Tuple[int, int]:
+        return x % GRID_COLS, y % GRID_ROWS
+
+    def _out_of_bounds(self, x: int, y: int) -> bool:
+        return x < 0 or y < 0 or x >= GRID_COLS or y >= GRID_ROWS
+
     def update(self):
-        """Update game state"""
-        if self.game_over:
+        if self.game_over or self.won_level:
             return
-        
-        # Update direction
+        if self.break_cooldown > 0:
+            self.break_cooldown -= 1
+
         self.direction = self.next_direction
-        
-        # Move snake
-        head_x, head_y = self.snake[0]
+        hx, hy = self.snake[0]
         dx, dy = self.direction.value
-        new_head = (head_x + dx, head_y + dy)
-        
-        # Check wall collision
-        if (new_head[0] < 0 or new_head[0] >= self.grid_width or 
-            new_head[1] < 0 or new_head[1] >= self.grid_height):
+        nx, ny = hx + dx, hy + dy
+
+        if self.snake_type.wrap_edges:
+            nx, ny = self._wrap(nx, ny)
+        elif self._out_of_bounds(nx, ny):
             self.game_over = True
             return
-        
-        # Check self collision
-        if new_head in self.snake:
+
+        new_head = (nx, ny)
+
+        if new_head in self.maze_walls:
+            if self.snake_type.wall_breaker and self.speed_boost and self.break_cooldown == 0:
+                self.maze_walls.discard(new_head)
+                self.break_cooldown = 18
+                self._burst(new_head, WALL_EDGE)
+            else:
+                self.game_over = True
+                return
+
+        if new_head in self.hand_walls:
+            self.hand_walls.discard(new_head)
+            self._burst(new_head, HAND_WALL_GLOW)
+
+        eating = new_head == self.fruit
+        body = self.snake if eating else self.snake[:-1]
+        if not self.snake_type.pass_self and new_head in body:
             self.game_over = True
             return
-        
-        # Add new head
+
         self.snake.insert(0, new_head)
-        
-        # Check fruit collision
-        if new_head == self.fruit:
-            self.score += 10
-            self.add_particle_effect(new_head[0], new_head[1])
-            self.spawn_fruit()
+        if eating:
+            gained = int(10 * self.snake_type.score_mult * (1 + self.level.number * 0.08))
+            self.score += gained
+            self.fruits_eaten += 1
+            self._burst(new_head, APPLE)
+            if self.fruits_eaten >= self.level.fruit_goal:
+                self.won_level = True
+            elif not self.spawn_fruit():
+                self.won_level = True
         else:
-            # Remove tail if no fruit eaten
             self.snake.pop()
-        
-        # Update particles
-        self.update_particles()
-    
-    def draw_snake_segment(self, surface, x: int, y: int, is_head: bool = False):
-        """Draw a single snake segment with Nokia-style appearance"""
-        pixel_x = x * self.grid_size
-        pixel_y = y * self.grid_size
-        
-        # Main segment rectangle
-        segment_rect = pygame.Rect(pixel_x + 1, pixel_y + 1, 
-                                 self.grid_size - 2, self.grid_size - 2)
-        
-        if is_head:
-            # Head is slightly different color
-            pygame.draw.rect(surface, self.LIGHT_GREEN, segment_rect)
-            # Draw eyes
-            eye_size = 3
-            left_eye = pygame.Rect(pixel_x + 5, pixel_y + 5, eye_size, eye_size)
-            right_eye = pygame.Rect(pixel_x + 12, pixel_y + 5, eye_size, eye_size)
-            pygame.draw.rect(surface, self.BLACK, left_eye)
-            pygame.draw.rect(surface, self.BLACK, right_eye)
-        else:
-            # Body segments
-            pygame.draw.rect(surface, self.NOKIA_GREEN, segment_rect)
-        
-        # Border for 3D effect
-        pygame.draw.rect(surface, self.DARK_GREEN, segment_rect, 1)
-    
-    def draw_fruit(self, surface):
-        """Draw fruit with glowing effect"""
-        x, y = self.fruit
-        pixel_x = x * self.grid_size
-        pixel_y = y * self.grid_size
-        
-        # Glowing effect
-        glow_size = self.grid_size + 4
-        glow_rect = pygame.Rect(pixel_x - 2, pixel_y - 2, glow_size, glow_size)
-        pygame.draw.rect(surface, self.ORANGE, glow_rect, 2)
-        
-        # Main fruit
-        fruit_rect = pygame.Rect(pixel_x + 2, pixel_y + 2, 
-                               self.grid_size - 4, self.grid_size - 4)
-        pygame.draw.rect(surface, self.RED, fruit_rect)
-        
-        # Shine effect
-        shine_rect = pygame.Rect(pixel_x + 4, pixel_y + 4, 4, 4)
-        pygame.draw.rect(surface, self.WHITE, shine_rect)
-    
-    def draw_particles(self, surface):
-        """Draw particle effects"""
+
+        self._update_particles()
+
+    def _burst(self, cell: Tuple[int, int], color: Tuple[int, int, int]):
+        px = cell[0] * CELL_SIZE + CELL_SIZE // 2
+        py = cell[1] * CELL_SIZE + CELL_SIZE // 2
+        for _ in range(10):
+            self.particles.append(
+                {
+                    "x": px,
+                    "y": py,
+                    "vx": random.uniform(-3.2, 3.2),
+                    "vy": random.uniform(-3.2, 3.2),
+                    "life": 22,
+                    "max": 22,
+                    "color": color,
+                }
+            )
+
+    def _update_particles(self):
+        alive = []
         for particle in self.particles:
-            alpha = int(255 * (particle['life'] / particle['max_life']))
-            size = max(1, int(3 * (particle['life'] / particle['max_life'])))
-            
-            # Create a surface for the particle with alpha
-            particle_surface = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-            color = (*self.ORANGE, alpha)
-            pygame.draw.circle(particle_surface, color, (size, size), size)
-            
-            surface.blit(particle_surface, 
-                        (int(particle['x'] - size), int(particle['y'] - size)))
-    
-    def draw_grid(self, surface):
-        """Draw Nokia-style grid background"""
-        for x in range(0, self.width, self.grid_size):
-            pygame.draw.line(surface, (40, 40, 40), (x, 0), (x, self.height))
-        for y in range(0, self.height, self.grid_size):
-            pygame.draw.line(surface, (40, 40, 40), (0, y), (self.width, y))
-    
-    def draw(self):
-        """Draw the game"""
-        # Clear screen
-        self.screen.fill(self.BLACK)
-        
-        # Draw grid
-        self.draw_grid(self.screen)
-        
+            particle["x"] += particle["vx"]
+            particle["y"] += particle["vy"]
+            particle["life"] -= 1
+            if particle["life"] > 0:
+                alive.append(particle)
+        self.particles = alive
+
+    def draw_board(self, surface: pygame.Surface):
+        board = pygame.Surface((PLAY_WIDTH, PLAY_HEIGHT))
+        board.fill((6, 10, 16))
+
+        for x in range(GRID_COLS + 1):
+            pygame.draw.line(board, GRID_LINE, (x * CELL_SIZE, 0), (x * CELL_SIZE, PLAY_HEIGHT))
+        for y in range(GRID_ROWS + 1):
+            pygame.draw.line(board, GRID_LINE, (0, y * CELL_SIZE), (PLAY_WIDTH, y * CELL_SIZE))
+
+        pygame.draw.rect(board, (36, 54, 78), board.get_rect(), 2)
+
+        for x, y in self.maze_walls:
+            self._draw_block(board, x, y, WALL, WALL_EDGE)
+
+        for x, y in self.hand_walls:
+            self._draw_block(board, x, y, HAND_WALL, HAND_WALL_GLOW)
+
+        if self.ghost_cell and self.ghost_cell not in self.occupied() and self.ghost_cell != self.fruit:
+            gx, gy = self.ghost_cell
+            rect = pygame.Rect(gx * CELL_SIZE + 3, gy * CELL_SIZE + 3, CELL_SIZE - 6, CELL_SIZE - 6)
+            pygame.draw.rect(board, HAND_WALL_GLOW, rect, 2, border_radius=4)
+
         if not self.game_over:
-            # Draw snake
+            self._draw_fruit(board)
             for i, segment in enumerate(self.snake):
-                self.draw_snake_segment(self.screen, segment[0], segment[1], i == 0)
-            
-            # Draw fruit
-            self.draw_fruit(self.screen)
-            
-            # Draw particles
-            self.draw_particles(self.screen)
-        
-        # Draw UI
-        self.draw_ui()
-        
-        pygame.display.flip()
-    
-    def draw_ui(self):
-        """Draw user interface elements"""
-        # Score
-        score_text = self.font.render(f"Score: {self.score}", True, self.WHITE)
-        self.screen.blit(score_text, (10, 10))
-        
-        # Speed boost indicator
-        if self.speed_boost:
-            boost_text = self.small_font.render("SPEED BOOST!", True, self.LIGHT_GREEN)
-            self.screen.blit(boost_text, (10, 50))
-        
-        # Game over screen
-        if self.game_over:
-            # Semi-transparent overlay
-            overlay = pygame.Surface((self.width, self.height))
-            overlay.set_alpha(128)
-            overlay.fill(self.BLACK)
-            self.screen.blit(overlay, (0, 0))
-            
-            # Game over text
-            game_over_text = self.font.render("GAME OVER", True, self.WHITE)
-            final_score_text = self.font.render(f"Final Score: {self.score}", True, self.WHITE)
-            restart_text = self.small_font.render("Show 'UP' gesture to restart", True, self.NOKIA_GREEN)
-            
-            # Center the text
-            go_rect = game_over_text.get_rect(center=(self.width//2, self.height//2 - 40))
-            fs_rect = final_score_text.get_rect(center=(self.width//2, self.height//2))
-            rs_rect = restart_text.get_rect(center=(self.width//2, self.height//2 + 40))
-            
-            self.screen.blit(game_over_text, go_rect)
-            self.screen.blit(final_score_text, fs_rect)
-            self.screen.blit(restart_text, rs_rect)
-    
-    def handle_restart(self, gesture: Optional[str]):
-        """Handle game restart"""
-        if self.game_over and gesture == "UP":
-            self.reset_game()
-    
-    def get_current_speed(self) -> int:
-        """Get current game speed"""
-        return self.boost_speed if self.speed_boost else self.base_speed
-    
-    def quit(self):
-        """Quit the game"""
-        pygame.quit()
+                self._draw_segment(board, segment[0], segment[1], i == 0)
+            self._draw_particles(board)
+
+        surface.blit(board, (PLAY_X, PLAY_Y))
+
+    def _draw_block(self, surface: pygame.Surface, x: int, y: int, fill, edge):
+        rect = pygame.Rect(x * CELL_SIZE + 1, y * CELL_SIZE + 1, CELL_SIZE - 2, CELL_SIZE - 2)
+        pygame.draw.rect(surface, fill, rect, border_radius=4)
+        pygame.draw.rect(surface, edge, rect, 1, border_radius=4)
+
+    def _draw_segment(self, surface: pygame.Surface, x: int, y: int, is_head: bool):
+        st = self.snake_type
+        rect = pygame.Rect(x * CELL_SIZE + 2, y * CELL_SIZE + 2, CELL_SIZE - 4, CELL_SIZE - 4)
+        color = st.head if is_head else st.body
+        pygame.draw.rect(surface, color, rect, border_radius=7)
+        pygame.draw.rect(surface, st.dark, rect, 1, border_radius=7)
+        if is_head:
+            self._draw_eyes(surface, x, y)
+
+    def _draw_eyes(self, surface: pygame.Surface, x: int, y: int):
+        px, py = x * CELL_SIZE, y * CELL_SIZE
+        if self.direction == Direction.RIGHT:
+            eyes = [(px + 14, py + 7), (px + 14, py + 15)]
+        elif self.direction == Direction.LEFT:
+            eyes = [(px + 7, py + 7), (px + 7, py + 15)]
+        elif self.direction == Direction.UP:
+            eyes = [(px + 7, py + 7), (px + 15, py + 7)]
+        else:
+            eyes = [(px + 7, py + 14), (px + 15, py + 14)]
+        for ex, ey in eyes:
+            pygame.draw.circle(surface, (12, 14, 18), (ex, ey), 3)
+            pygame.draw.circle(surface, WHITE, (ex + 1, ey - 1), 1)
+
+    def _draw_fruit(self, surface: pygame.Surface):
+        x, y = self.fruit
+        cx = x * CELL_SIZE + CELL_SIZE // 2
+        cy = y * CELL_SIZE + CELL_SIZE // 2 + 1
+        pulse = 1.0 + 0.12 * math.sin(pygame.time.get_ticks() / 180)
+        radius = int((CELL_SIZE // 2 - 4) * pulse)
+        pygame.draw.circle(surface, APPLE, (cx, cy), radius)
+        pygame.draw.circle(surface, WHITE, (cx - 3, cy - 3), 2)
+        pygame.draw.ellipse(surface, APPLE_LEAF, (cx + 1, cy - radius - 2, 8, 5))
+
+    def _draw_particles(self, surface: pygame.Surface):
+        for particle in self.particles:
+            t = particle["life"] / particle["max"]
+            size = max(1, int(4 * t))
+            color = particle["color"]
+            pygame.draw.circle(surface, color, (int(particle["x"]), int(particle["y"])), size)
+
+    def overlay_status(self, surface: pygame.Surface, fonts: dict):
+        if not (self.game_over or self.won_level):
+            return
+        overlay = pygame.Surface((PLAY_WIDTH, PLAY_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((6, 8, 14, 170))
+        surface.blit(overlay, (PLAY_X, PLAY_Y))
+        title = "LEVEL CLEAR" if self.won_level else "GAME OVER"
+        color = GOLD if self.won_level else DANGER
+        text = fonts["title"].render(title, True, color)
+        sub = fonts["body"].render(f"Score {self.score}   fruit {self.fruits_eaten}/{self.level.fruit_goal}", True, WHITE)
+        hint = fonts["small"].render("Enter  continue    R  retry    Esc  menu", True, MUTED)
+        cx = PLAY_X + PLAY_WIDTH // 2
+        cy = PLAY_Y + PLAY_HEIGHT // 2
+        surface.blit(text, text.get_rect(center=(cx, cy - 28)))
+        surface.blit(sub, sub.get_rect(center=(cx, cy + 10)))
+        surface.blit(hint, hint.get_rect(center=(cx, cy + 44)))
